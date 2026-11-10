@@ -1,0 +1,7 @@
+.env
+*.auto.pkrvars.hcl
+*.local.pkrvars.hcl
+*.log
+*.zip
+*.exe
+packer_cache/
