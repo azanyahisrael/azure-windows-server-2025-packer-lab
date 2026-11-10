@@ -1,0 +1,83 @@
+name: Windows Server image lab
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Azure build mode
+        type: choice
+        options: [lab, candidate]
+        default: lab
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    env:
+      PKR_VAR_runner_cidr: 192.0.2.10/32
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-packer@ce93c3c08a6c2ff2275bf4b54ff0d9a75f6c9789 # v3
+        with:
+          version: '1.16.2'
+      - name: Validate lab and gallery configurations
+        run: |
+          packer fmt -check .
+          packer init .
+          packer validate .
+          export PKR_VAR_candidate='{"resource_group":"rg-images","gallery":"labImages","definition":"win2025-lab","version":"1.1.1"}'
+          export PKR_VAR_build_vm_name=bld1234567890
+          packer validate .
+      - name: Check script syntax
+        run: |
+          for script in scripts/*.sh; do bash -n "$script"; done
+          pwsh -NoProfile -Command '
+            foreach ($script in Get-ChildItem -Recurse -Filter *.ps1) {
+              $errors = $null
+              $null = [System.Management.Automation.Language.Parser]::ParseFile($script.FullName, [ref]$null, [ref]$errors)
+              if ($errors) { throw ($errors | Out-String) }
+            }'
+
+  build:
+    needs: validate
+    if: github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    environment: image-build
+    timeout-minutes: 120
+    concurrency:
+      group: windows-server-image-build
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-packer@ce93c3c08a6c2ff2275bf4b54ff0d9a75f6c9789 # v3
+        with:
+          version: '1.16.2'
+      - name: Sign in to Azure using OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3
+        env:
+          AZURE_CORE_OUTPUT: none
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Build Windows Server in Azure
+        env:
+          BUILD_MODE: ${{ inputs.mode }}
+          PKR_VAR_build_resource_group: ${{ vars.AZURE_BUILD_RG }}
+          AZURE_GALLERY_RG: ${{ vars.AZURE_GALLERY_RG }}
+          AZURE_GALLERY_NAME: ${{ vars.AZURE_GALLERY_NAME }}
+          AZURE_IMAGE_DEFINITION: ${{ vars.AZURE_IMAGE_DEFINITION }}
+        run: bash scripts/build-in-azure.sh
