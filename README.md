@@ -2,6 +2,19 @@
 
 Packer builds a Windows Server 2025 Datacenter Gen2 image in Azure. GitHub Actions can run a temporary lab build or capture a new Azure Compute Gallery version. For a gallery build, Ansible checks a fresh VM booted from the exact version before the workflow can promote it.
 
+## What broke and how I fixed it
+
+| What failed | What fixed it |
+| --- | --- |
+| Azure login reported missing client and tenant IDs. | Pointed the build job at the existing GitHub environment, `image-build-Azure-Packman-lab`, so it could read the Azure identity settings already stored there. |
+| Entra rejected the GitHub OIDC token with `AADSTS700213`. | Matched the Entra federated credential to the exact subject GitHub issued, including the repository IDs and environment name. |
+| Azure Blob upload returned `Forbidden`. | Granted my upload account **Storage Blob Data Contributor** and gave the workflow's service principal **Storage Blob Data Reader** for the baseline storage. |
+| The download step stopped at `Set BASELINE_STORAGE_ACCOUNT`. | Added the storage account, container, blob name, and SHA-256 hash as GitHub environment variables. The workflow now downloads the reviewed `Harden-V2.ps1` from private Blob Storage and checks its hash before Packer runs. |
+
+**Latest lab result.** GitHub Actions signed in to Azure, downloaded and verified the baseline, and passed Packer template validation. The Azure build then exited with code 1. The log shows a Windows Update policy message, but the same text can come from setup or from a failed verification, so the root cause is still open. The build did not confirm the Level 1 checks. [Lab run #7](https://github.com/azanyahisrael/azure-windows-server-2025-packer-lab/actions/runs/43492387650/job/132116817029#step:7:21)
+
+The pipeline applies eligible Windows updates with configurable delays (7 days for routine patches and 3 days for critical patches by default). The separate `candidate` mode is configured to capture an Azure Compute Gallery version, boot a fresh VM from that exact version, and require its Ansible drift audit to pass before promotion. The lab run did not exercise the gallery capture or Ansible audit.
+
 ## Tools used
 
 | Tool | How it was used |
@@ -22,7 +35,7 @@ Packer builds a Windows Server 2025 Datacenter Gen2 image in Azure. GitHub Actio
 | Cleanup | Packer removed the temporary VM, disk, network resources and Key Vault. The lab resource group remained available for future builds. |
 | Updated project | Packer validation passed locally for lab and candidate modes. The GitHub Actions workflow passed actionlint, and the PowerShell and Bash scripts passed syntax checks. |
 | GitHub Actions | The push-triggered validation job passed. The Azure build job is enabled for manual runs on the default branch. [Validation run](https://github.com/azanyahisrael/azure-windows-server-2025-packer-lab/actions/runs/42889574371) |
-| Next verification | Run the updated workflow in candidate mode and review the Ansible audit before enabling scheduled builds. |
+| Next verification | Diagnose the latest lab failure, then verify a gallery candidate with the Ansible audit before enabling scheduled builds. |
 
 The initial Azure run exercised connectivity and cleanup. The updated workflow applies the reviewed script derived from the Windows Server 2025 Stand-alone v2.0.0 Level 1 baseline. Its post-capture audit reads machine registry policy, active firewall settings, account policy, user rights and advanced auditing. Per-user settings, manual assessments and the four settings that need organization-specific account names or sign-in text are outside this audit. A separate check verifies the documented Windows Update exception. [CIS Windows Server benchmarks](https://www.cisecurity.org/benchmark/microsoft_windows_server)
 
