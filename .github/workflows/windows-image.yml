@@ -4,6 +4,8 @@ on:
   pull_request:
   push:
     branches: [main]
+  schedule:
+    - cron: '17 9 * * *'
   workflow_dispatch:
     inputs:
       mode:
@@ -12,6 +14,10 @@ on:
         options: [lab, candidate]
         default: lab
         required: true
+      promote:
+        description: Allow a passing candidate to become the latest gallery version
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -21,6 +27,7 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       PKR_VAR_runner_cidr: 192.0.2.10/32
+      PACKER_GITHUB_API_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -28,8 +35,12 @@ jobs:
       - uses: hashicorp/setup-packer@ce93c3c08a6c2ff2275bf4b54ff0d9a75f6c9789 # v3
         with:
           version: '1.16.2'
-      - name: Validate lab and gallery configurations
+      - name: Validate Packer configuration without Azure credentials
         run: |
+          # The build job downloads the private baseline before validating with it.
+          export PKR_VAR_hardening_script_path=scripts/.validate-hardening.ps1
+          trap 'rm -f "$PKR_VAR_hardening_script_path"' EXIT
+          printf 'throw "Validation-only placeholder"\n' > "$PKR_VAR_hardening_script_path"
           packer fmt -check .
           packer init .
           packer validate .
@@ -48,10 +59,13 @@ jobs:
 
   build:
     needs: validate
-    if: github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    if: >-
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
+      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'schedule' && vars.ENABLE_SCHEDULED_IMAGE_BUILDS == 'true'))
     runs-on: ubuntu-24.04
     environment: image-build
-    timeout-minutes: 120
+    timeout-minutes: 360
     concurrency:
       group: windows-server-image-build
       cancel-in-progress: false
@@ -73,11 +87,39 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Download the reviewed hardening baseline
+        env:
+          BASELINE_STORAGE_ACCOUNT: ${{ vars.BASELINE_STORAGE_ACCOUNT }}
+          BASELINE_CONTAINER: ${{ vars.BASELINE_CONTAINER }}
+          BASELINE_BLOB: ${{ vars.BASELINE_BLOB }}
+          BASELINE_SHA256: ${{ vars.BASELINE_SHA256 }}
+        run: |
+          set -euo pipefail
+          : "${BASELINE_STORAGE_ACCOUNT:?Set BASELINE_STORAGE_ACCOUNT.}"
+          : "${BASELINE_CONTAINER:?Set BASELINE_CONTAINER.}"
+          : "${BASELINE_BLOB:?Set BASELINE_BLOB.}"
+          [[ ${BASELINE_SHA256:-} =~ ^[A-Fa-f0-9]{64}$ ]] || { echo 'Set BASELINE_SHA256 to the reviewed script hash.' >&2; exit 1; }
+          az storage blob download --auth-mode login --account-name "$BASELINE_STORAGE_ACCOUNT" \
+            --container-name "$BASELINE_CONTAINER" --name "$BASELINE_BLOB" --file Harden-V2.ps1 -o none
+          printf '%s  Harden-V2.ps1\n' "${BASELINE_SHA256,,}" | sha256sum --check
+      - name: Install Ansible for the post-capture audit
+        if: github.event_name == 'schedule' || inputs.mode == 'candidate'
+        run: |
+          python3 -m venv "$RUNNER_TEMP/ansible"
+          "$RUNNER_TEMP/ansible/bin/pip" install 'ansible-core~=2.20.0'
+          echo "$RUNNER_TEMP/ansible/bin" >> "$GITHUB_PATH"
       - name: Build Windows Server in Azure
         env:
-          BUILD_MODE: ${{ inputs.mode }}
+          PACKER_GITHUB_API_TOKEN: ${{ github.token }}
+          BUILD_MODE: ${{ github.event_name == 'schedule' && 'candidate' || inputs.mode }}
+          PROMOTE_IMAGE: ${{ github.event_name == 'schedule' || inputs.promote }}
           PKR_VAR_build_resource_group: ${{ vars.AZURE_BUILD_RG }}
+          APPROVED_BASE_VERSION: ${{ vars.AZURE_BASE_VERSION }}
           AZURE_GALLERY_RG: ${{ vars.AZURE_GALLERY_RG }}
           AZURE_GALLERY_NAME: ${{ vars.AZURE_GALLERY_NAME }}
           AZURE_IMAGE_DEFINITION: ${{ vars.AZURE_IMAGE_DEFINITION }}
+          AZURE_VALIDATION_SUBNET_ID: ${{ vars.AZURE_VALIDATION_SUBNET_ID }}
+          PKR_VAR_routine_patch_delay_days: ${{ vars.ROUTINE_PATCH_DELAY_DAYS || '7' }}
+          PKR_VAR_critical_patch_delay_days: ${{ vars.CRITICAL_PATCH_DELAY_DAYS || '3' }}
+          PKR_VAR_expedited_kbs: ${{ vars.EXPEDITED_KBS || '[]' }}
         run: bash scripts/build-in-azure.sh

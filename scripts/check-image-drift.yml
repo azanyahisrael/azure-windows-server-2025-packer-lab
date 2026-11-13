@@ -1,0 +1,83 @@
+---
+- name: Check the booted Windows Server image against the build baseline
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+  tasks:
+    - name: Run the read-only CIS checks through the Azure guest agent
+      ansible.builtin.command:
+        expand_argument_vars: false
+        argv:
+          - az
+          - vm
+          - run-command
+          - create
+          - --resource-group
+          - "{{ validation_rg }}"
+          - --vm-name
+          - "{{ validation_vm }}"
+          - --name
+          - check-cis-drift
+          - --async-execution
+          - "false"
+          - --timeout-in-seconds
+          - "600"
+          - --script
+          - "{{ lookup('ansible.builtin.file', audit_script, rstrip=false) }}"
+          - -o
+          - none
+      no_log: true
+      changed_when: false
+
+    - name: Read the check status and control results
+      ansible.builtin.command:
+        argv:
+          - az
+          - vm
+          - run-command
+          - show
+          - --resource-group
+          - "{{ validation_rg }}"
+          - --vm-name
+          - "{{ validation_vm }}"
+          - --name
+          - check-cis-drift
+          - --expand
+          - instanceView
+          - --query
+          - instanceView
+          - -o
+          - json
+      register: command_result
+      no_log: true
+      changed_when: false
+
+    - name: Extract the guest result
+      ansible.builtin.set_fact:
+        guest: "{{ command_result.stdout | from_json }}"
+      no_log: true
+
+    - name: Require a completed audit with a result
+      ansible.builtin.assert:
+        that:
+          - guest.executionState == 'Succeeded'
+          - guest.exitCode == 0
+          - (guest.output | default('') | regex_findall('(?m)^CIS_DRIFT_RESULT=(.+)$') | length) == 1
+        fail_msg: >-
+          The guest audit did not complete. State {{ guest.executionState | default('unknown') }},
+          exit code {{ guest.exitCode | default('unknown') }}.
+
+    - name: Decode the control summary
+      ansible.builtin.set_fact:
+        audit: "{{ (guest.output | regex_findall('(?m)^CIS_DRIFT_RESULT=(.+)$') | first) | from_json }}"
+
+    - name: Report checked controls and block a candidate with drift
+      ansible.builtin.assert:
+        that:
+          - audit.checked is number
+          - audit.checked > 1
+          - audit.drift | length == 0
+        success_msg: "{{ audit.checked }} checks passed. {{ audit.unassessed }} baseline entries were outside this audit."
+        fail_msg: "Image audit failed. Checks run {{ audit.checked }}. Drift IDs {{ audit.drift | join(', ') }}."

@@ -6,6 +6,10 @@ packer {
       source  = "github.com/hashicorp/azure"
       version = "= 2.6.5"
     }
+    windows-update = {
+      source  = "github.com/rgl/windows-update"
+      version = "= 0.18.5"
+    }
   }
 }
 
@@ -31,6 +35,44 @@ variable "base_version" {
 variable "build_vm_name" {
   type    = string
   default = ""
+}
+
+variable "hardening_script_path" {
+  type    = string
+  default = "Harden-V2.ps1"
+}
+
+variable "routine_patch_delay_days" {
+  type    = number
+  default = 7
+  validation {
+    condition     = var.routine_patch_delay_days >= 3 && floor(var.routine_patch_delay_days) == var.routine_patch_delay_days
+    error_message = "The routine patch delay must be a whole number of days, at least 3."
+  }
+}
+
+variable "critical_patch_delay_days" {
+  type    = number
+  default = 3
+  validation {
+    condition     = contains([1, 2, 3], var.critical_patch_delay_days)
+    error_message = "The critical patch delay must be 1, 2, or 3 days."
+  }
+}
+
+variable "expedited_kbs" {
+  type    = list(string)
+  default = []
+  validation {
+    condition     = alltrue([for kb in var.expedited_kbs : can(regex("^KB[0-9]+$", kb))])
+    error_message = "Write expedited KBs as KB followed by digits."
+  }
+}
+
+locals {
+  expedited_kb_ids = [for kb in var.expedited_kbs : format("'%s'", trimprefix(kb, "KB"))]
+  expedited_filter = length(var.expedited_kbs) == 0 ? "$false" : "(@($_.KBArticleIDs | Where-Object { $_ -in @(${join(", ", local.expedited_kb_ids)}) }).Count -gt 0)"
+  patch_date       = "[datetime]::SpecifyKind($_.LastDeploymentChangeTime, [DateTimeKind]::Utc)"
 }
 
 variable "candidate" {
@@ -87,9 +129,43 @@ build {
   }
 
   provisioner "powershell" {
-    script            = "harden.ps1"
-    elevated_user     = "SYSTEM"
-    elevated_password = ""
+    script                   = "${path.root}/scripts/Initialize-ImageBuild.ps1"
+    elevated_user            = "SYSTEM"
+    elevated_password        = ""
+    elevated_execute_command = "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{{ .Path }}\""
+    timeout                  = "15m"
+  }
+
+  provisioner "windows-update" {
+    search_criteria = "IsInstalled=0 and IsHidden=0 and Type='Software'"
+    filters = [
+      "exclude: -not $_.LastDeploymentChangeTime -or $_.LastDeploymentChangeTime -lt [datetime]'2000-01-01'",
+      "include: ($_.MsrcSeverity -eq 'Critical' -or ${local.expedited_filter}) -and (${local.patch_date} -le [DateTime]::UtcNow.AddDays(-${var.critical_patch_delay_days}))",
+      "exclude: $_.BrowseOnly",
+      "include: ${local.patch_date} -le [DateTime]::UtcNow.AddDays(-${var.routine_patch_delay_days})",
+    ]
+    restart_timeout = "30m"
+    timeout         = "2h"
+  }
+
+  provisioner "powershell" {
+    script                   = "${path.root}/${var.hardening_script_path}"
+    elevated_user            = "SYSTEM"
+    elevated_password        = ""
+    elevated_execute_command = "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{{ .Path }}\" -Profile L1 -Apply -ExcludeControl 18.10.94.2.2 -LgpoPath \"%ProgramFiles%/CIS Image Build/LGPO.exe\""
+    timeout                  = "30m"
+  }
+
+  provisioner "windows-restart" {
+    restart_timeout = "30m"
+  }
+
+  provisioner "powershell" {
+    script                   = "${path.root}/scripts/Finalize-ImageBuild.ps1"
+    elevated_user            = "SYSTEM"
+    elevated_password        = ""
+    elevated_execute_command = "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{{ .Path }}\""
+    timeout                  = "15m"
   }
 
   provisioner "shell-local" {

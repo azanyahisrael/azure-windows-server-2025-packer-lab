@@ -5,3 +5,5 @@
 *.zip
 *.exe
 packer_cache/
+/Harden-V2.ps1
+/scripts/Harden-V2.ps1
