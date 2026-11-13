@@ -80,10 +80,10 @@ For a reproducible local build, set `PKR_VAR_base_version` to a specific version
 
 ## Connect GitHub Actions to Azure
 
-Create the GitHub environment **image-build** under **Settings → Environments**. Under **Deployment branches and tags**, choose **Selected branches and tags** and allow only the default branch, `main`. The validation job uses read-only repository permissions. The manual build job requests an OIDC token through the `image-build` environment. [GitHub OIDC for Azure](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-azure)
+Open the GitHub environment **image-build-Azure-Packman-lab** under **Settings → Environments**. Under **Deployment branches and tags**, the environment allows the default branch, `main`. The validation job uses read-only repository permissions. The build job requests an OIDC token through this environment. [GitHub OIDC for Azure](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-azure)
 
 1. In the lab tenant, create a single-tenant **App registration**. Entra creates its service principal, which appears under **Enterprise applications**. Copy the **Application (client) ID** and **Directory (tenant) ID** from the registration's Overview page. [Microsoft Entra app registration](https://learn.microsoft.com/en-us/entra/identity-platform/howto-create-service-principal-portal)
-2. On the app registration, go to **Certificates & secrets → Federated credentials → Add credential**. Select **GitHub Actions deploying Azure resources**. Set the organization to the GitHub repository owner's username or organization name and enter the repository name. Use the GitHub owner and repository IDs when prompted. Select **Environment** and enter `image-build`.
+2. On the app registration, go to **Certificates & secrets → Federated credentials → Add credential**. Select **GitHub Actions deploying Azure resources**. Set the organization to the GitHub repository owner's username or organization name and enter the repository name. Use the GitHub owner and repository IDs when prompted. Select **Environment** and enter `image-build-Azure-Packman-lab`.
 3. In the Azure portal, open the dedicated build resource group and go to **Access control (IAM) → Add role assignment**. Assign **Contributor** to the app's service principal at that resource group. [Azure role assignments](https://learn.microsoft.com/en-us/entra/identity-platform/howto-create-service-principal-portal#assign-a-role-to-the-application)
 
 For a public repository, the GitHub API returns the numeric IDs used by the form. `owner.id` is the **Organization ID** field, including for a personal repository. `id` is the **Repository ID**. Check the generated **Subject identifier** against the repository's OIDC subject format. New GitHub.com repositories use the owner and repository IDs in the subject. [GitHub OIDC subject formats](https://docs.github.com/en/actions/reference/security/oidc#immutable-subject-claims)
@@ -92,10 +92,10 @@ For a public repository, the GitHub API returns the numeric IDs used by the form
 $repo = Invoke-RestMethod 'https://api.github.com/repos/<owner>/<repository>'
 $repo.owner.id
 $repo.id
-"repo:$($repo.owner.login)@$($repo.owner.id)/$($repo.name)@$($repo.id):environment:image-build"
+"repo:$($repo.owner.login)@$($repo.owner.id)/$($repo.name)@$($repo.id):environment:image-build-Azure-Packman-lab"
 ~~~
 
-In the **image-build** environment, add these secrets and variables:
+The **image-build-Azure-Packman-lab** environment has these secrets and variables.
 
 | Kind | Name | Value |
 | --- | --- | --- |
@@ -104,7 +104,7 @@ In the **image-build** environment, add these secrets and variables:
 | Secret | AZURE_SUBSCRIPTION_ID | Subscription ID for the Azure lab subscription |
 | Variable | AZURE_BUILD_RG | The existing lab resource group, such as `rg-packer-lab` |
 
-Store the reviewed `Harden-V2.ps1` in a private Azure Blob container reachable from the GitHub runner. Grant the workflow identity **Storage Blob Data Reader** on that container. From the repository folder, an operator with blob write permission can upload the script under a name derived from its hash. Set `BASELINE_STORAGE_ACCOUNT`, `BASELINE_CONTAINER`, `BASELINE_BLOB`, and `BASELINE_SHA256` in **image-build** to the corresponding values. When you approve a revised baseline, upload it under its new name and update the blob name and hash together. [Authorize Azure CLI access to Blob Storage](https://learn.microsoft.com/en-us/azure/storage/blobs/authorize-data-operations-cli)
+Store the reviewed `Harden-V2.ps1` in a private Azure Blob container reachable from the GitHub runner. Grant the workflow identity **Storage Blob Data Reader** on that container. From the repository folder, an operator with blob write permission can upload the script under a name derived from its hash. Set `BASELINE_STORAGE_ACCOUNT`, `BASELINE_CONTAINER`, `BASELINE_BLOB`, and `BASELINE_SHA256` in **image-build-Azure-Packman-lab** to the corresponding values. When you approve a revised baseline, upload it under its new name and update the blob name and hash together. [Authorize Azure CLI access to Blob Storage](https://learn.microsoft.com/en-us/azure/storage/blobs/authorize-data-operations-cli)
 
 ~~~powershell
 $account = '<storage-account>'
@@ -136,7 +136,7 @@ az role assignment create --assignee-object-id $principalId --assignee-principal
 az role assignment create --assignee-object-id $principalId --assignee-principal-type ServicePrincipal --role Contributor --scope $definitionId -o none
 ~~~
 
-Add these variables to **image-build**.
+Add these variables to **image-build-Azure-Packman-lab**.
 
 | Variable | Value |
 | --- | --- |
@@ -154,7 +154,7 @@ Run **candidate** with **promote** unchecked for the first end-to-end test. Pack
 
 Set the **repository** Actions variable `ENABLE_SCHEDULED_IMAGE_BUILDS` to `true` to enable the daily run at 09:17 UTC on the default branch. A scheduled run builds a new version and makes it eligible for `latest` after the audit passes. GitHub environment approval rules, if configured, still apply. [GitHub Actions scheduled workflows](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule)
 
-The image-build environment can override `ROUTINE_PATCH_DELAY_DAYS` (default 7), `CRITICAL_PATCH_DELAY_DAYS` (default 3, allowed 1–3), and `EXPEDITED_KBS` (a JSON list such as `["KB1234567"]`). The Windows Update Agent catalog date is used to evaluate delay. The Windows Update exception sets the VM to notify before installation. Superseded updates and patches already included in the approved Marketplace base are subject to the update catalog and base image contents.
+The **image-build-Azure-Packman-lab** environment can override `ROUTINE_PATCH_DELAY_DAYS` (default 7), `CRITICAL_PATCH_DELAY_DAYS` (default 3, allowed 1–3), and `EXPEDITED_KBS` (a JSON list such as `["KB1234567"]`). The Windows Update Agent catalog date is used to evaluate delay. The Windows Update exception sets the VM to notify before installation. Superseded updates and patches already included in the approved Marketplace base are subject to the update catalog and base image contents.
 
 When CIS publishes a benchmark revision, review the changes before updating the baseline script and its pinned hash. Future builds use the reviewed revision. The post-capture audit checks the image before release. Ongoing compliance checks on VMs already deployed have their own trigger and inventory.
 

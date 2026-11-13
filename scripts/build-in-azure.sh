@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${PKR_VAR_build_resource_group:?Set AZURE_BUILD_RG in the image-build environment.}"
+: "${PKR_VAR_build_resource_group:?Set AZURE_BUILD_RG in the image-build-Azure-Packman-lab environment.}"
 : "${BUILD_MODE:?Choose lab or candidate.}"
 export PKR_VAR_hardening_script_path="${PKR_VAR_hardening_script_path:-Harden-V2.ps1}"
 if [[ ! -f $PKR_VAR_hardening_script_path ]]; then
