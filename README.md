@@ -1,185 +1,85 @@
 # Azure Windows Server 2025 Image Lab
 
-Packer builds a Windows Server 2025 Datacenter Gen2 image in Azure. GitHub Actions can run a temporary lab build or capture a new Azure Compute Gallery version. For a gallery build, Ansible checks a fresh VM booted from the exact version before the workflow can promote it.
-
-## What broke and how I fixed it
-
-| What failed | What fixed it |
-| --- | --- |
-| Azure login reported missing client and tenant IDs. | Pointed the build job at the existing GitHub environment, `image-build-Azure-Packman-lab`, so it could read the Azure identity settings already stored there. |
-| Entra rejected the GitHub OIDC token with `AADSTS700213`. | Matched the Entra federated credential to the exact subject GitHub issued, including the repository IDs and environment name. |
-| Azure Blob upload returned `Forbidden`. | Granted my upload account **Storage Blob Data Contributor** and gave the workflow's service principal **Storage Blob Data Reader** for the baseline storage. |
-| The download step stopped at `Set BASELINE_STORAGE_ACCOUNT`. | Added the storage account, container, blob name, and SHA-256 hash as GitHub environment variables. The workflow now downloads the reviewed `Harden-V2.ps1` from private Blob Storage and checks its hash before Packer runs. |
-
-**Latest lab result.** GitHub Actions signed in to Azure, downloaded and verified the baseline, and passed Packer template validation. The Azure build then exited with code 1. The log shows a Windows Update policy message, but the same text can come from setup or from a failed verification, so the root cause is still open. The build did not confirm the Level 1 checks. [Lab run #7](https://github.com/azanyahisrael/azure-windows-server-2025-packer-lab/actions/runs/43492387650/job/132116817029#step:7:21)
-
-The pipeline applies eligible Windows updates with configurable delays (7 days for routine patches and 3 days for critical patches by default). The separate `candidate` mode is configured to capture an Azure Compute Gallery version, boot a fresh VM from that exact version, and require its Ansible drift audit to pass before promotion. The lab run did not exercise the gallery capture or Ansible audit.
-
-## Tools used
-
-| Tool | How it was used |
-| --- | --- |
-| HashiCorp Packer and HCL | Defined the Windows Marketplace base image, temporary VM, and provisioning steps. |
-| PowerShell and WinRM | Applies the reviewed Level 1 baseline and checks Windows Update policy on the temporary build VM. |
-| Azure CLI, Azure Portal, and Azure Activity Log | Looked up Marketplace image versions and investigated deployment failures and VM-family quotas. |
-| GitHub Actions | Validates the template and starts Azure builds manually or on a daily schedule when enabled. |
-| Ansible and Azure VM Run Command | Checks the booted candidate from the CI runner through the Azure guest agent. The test VM has no public IP. |
-| Microsoft Entra ID and Azure RBAC | Configured OIDC federation for the GitHub environment and scoped the service principal's build permissions to the lab resource group. |
-
-## Prior lab verification
-
-| Stage | Result |
-| --- | --- |
-| Azure VM provisioning | A local Packer run booted Windows Server 2025 in East US using **Standard_D2s_v4**. |
-| Windows connection | WinRM connected and the inline PowerShell check confirmed a workgroup VM. |
-| Cleanup | Packer removed the temporary VM, disk, network resources and Key Vault. The lab resource group remained available for future builds. |
-| Updated project | Packer validation passed locally for lab and candidate modes. The GitHub Actions workflow passed actionlint, and the PowerShell and Bash scripts passed syntax checks. |
-| GitHub Actions | The push-triggered validation job passed. The Azure build job is enabled for manual runs on the default branch. [Validation run](https://github.com/azanyahisrael/azure-windows-server-2025-packer-lab/actions/runs/42889574371) |
-| Next verification | Diagnose the latest lab failure, then verify a gallery candidate with the Ansible audit before enabling scheduled builds. |
-
-The initial Azure run exercised connectivity and cleanup. The updated workflow applies the reviewed script derived from the Windows Server 2025 Stand-alone v2.0.0 Level 1 baseline. Its post-capture audit reads machine registry policy, active firewall settings, account policy, user rights and advanced auditing. Per-user settings, manual assessments and the four settings that need organization-specific account names or sign-in text are outside this audit. A separate check verifies the documented Windows Update exception. [CIS Windows Server benchmarks](https://www.cisecurity.org/benchmark/microsoft_windows_server)
-
-## Build flow
+Every Monday, GitHub Actions builds a patched, CIS-hardened Windows Server 2025 image and publishes it to an Azure Compute Gallery. Anything deployed from the gallery's `latest` version is at most a week old.
 
 ~~~mermaid
 flowchart LR
-    PR["Pull request or push"] --> Validate["Packer and script validation"]
-    Manual["Manual or enabled daily run"] --> Validate
-    Validate --> Login["Azure login via OIDC"]
-    Login --> Base["Select Windows Marketplace base"]
-    Base --> VM["Temporary Windows build VM"]
-    VM --> Checks["Install eligible patches, apply Level 1 and reboot"]
-    Checks -->|Lab mode| Cleanup["Clean up temporary resources"]
-    Checks -->|Candidate mode| Generalize["Remove build access and run Sysprep"]
-    Generalize --> Gallery["Capture version excluded from latest"]
-    Gallery --> Drift["Boot exact version and run Ansible audit"]
-    Drift -->|Passed and promotion requested| Promote["Include the version in latest"]
-    Drift -->|Drift detected or audit failed| Failed["Fail run and keep candidate excluded"]
+    Base["Newest Marketplace image"] --> Patch["Windows Update"]
+    Patch --> Harden["CIS Level 1 script"]
+    Harden --> Configure["Ansible playbook"]
+    Configure --> Sysprep["Sysprep"]
+    Sysprep --> Gallery["New gallery version"]
 ~~~
 
 | File | Purpose |
 | --- | --- |
-| [windowsserver2025.pkr.hcl](windowsserver2025.pkr.hcl) | Configures the Azure base image, temporary VM and Packer provisioners. |
-| [.github/workflows/windows-image.yml](.github/workflows/windows-image.yml) | Validates changes and runs the build through Azure OIDC. |
-| [scripts/build-in-azure.sh](scripts/build-in-azure.sh) | Builds, calls post-capture verification and gates gallery promotion. |
-| [scripts/generalize.ps1](scripts/generalize.ps1) | Removes temporary build access and prepares Windows for capture via Azure VM Run Command. |
-| [scripts/verify-image.sh](scripts/verify-image.sh) | Boots the captured version on a private subnet, starts Ansible and deletes the test resources. |
-| [scripts/check-image-drift.yml](scripts/check-image-drift.yml) | Runs the guest audit and fails the pipeline if the result is missing or reports drift. |
+| [windowsserver2025.pkr.hcl](windowsserver2025.pkr.hcl) | The whole build, top to bottom. |
+| [ansible/configure.yml](ansible/configure.yml) | Settings enforced after hardening. Today it keeps automatic Windows updates on. |
+| [scripts/Get-Lgpo.ps1](scripts/Get-Lgpo.ps1) | Downloads Microsoft's LGPO.exe for the hardening script. |
+| [.github/workflows/windows-image.yml](.github/workflows/windows-image.yml) | Validates every push and scans the workflow with zizmor. Builds on Mondays and on **Run workflow**. |
 
-## Run the lab from Windows PowerShell
+The CIS script, `Harden-V2.ps1`, is private. The workflow downloads it from Azure Blob Storage and checks its SHA-256 before Packer runs.
 
-Install [Packer](https://developer.hashicorp.com/packer/install) and [Azure CLI](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli-windows?pivots=winget). Use Packer 1.14 or later. This project was checked with Packer 1.16.2 and pins the Azure plugin to 2.6.5.
+## How the image stays fresh
 
-Run these commands from the repository folder, where your reviewed `Harden-V2.ps1` sits next to `windowsserver2025.pkr.hcl`. Git ignores the local baseline. Replace the subscription placeholder and use a lab resource group in a region where the selected size has at least two available vCPUs.
+A gallery image is a snapshot, so it cannot patch itself. Two things keep it current.
 
-~~~powershell
-az login
-az account set --subscription '<your-lab-subscription>'
-az account show --query name -o tsv
+1. The weekly build starts from Microsoft's newest Marketplace image, installs every available update, and publishes a new version. The gallery's `latest` then points at it.
+2. The CIS baseline sets Windows Update to install automatically every day, and the Ansible playbook enforces that setting, so a VM made from the image keeps patching itself.
 
-$env:PKR_VAR_build_resource_group = 'rg-packer-lab'
-az group show --name $env:PKR_VAR_build_resource_group --query location -o tsv
+## Setup
 
-$publicIp = (Invoke-RestMethod 'https://api.ipify.org?format=json' -ErrorAction Stop).ip
-$env:PKR_VAR_runner_cidr = "$publicIp/32"
-
-packer init .
-packer validate .
-~~~
-
-After validation passes, run `packer build .` in the same window. This creates temporary Azure resources that can incur usage charges. Look for the workgroup message followed by `HARDENING_CHECKS_PASSED`. In lab mode, Packer ends with cleanup and reports that no artifacts were created.
-
-For a reproducible local build, set `PKR_VAR_base_version` to a specific version. Gallery candidate runs require a reviewed `AZURE_BASE_VERSION` because Packer's patch delays only apply to updates it installs. A Windows Marketplace image may already contain newer patches. The workflow records the exact base version in its summary. [Azure Marketplace image lookup](https://learn.microsoft.com/en-us/cli/azure/vm/image?view=azure-cli-latest#az-vm-image-show)
-
-## Connect GitHub Actions to Azure
-
-Open the GitHub environment **image-build-Azure-Packman-lab** under **Settings → Environments**. Under **Deployment branches and tags**, the environment allows the default branch, `main`. The validation job uses read-only repository permissions. The build job requests an OIDC token through this environment. [GitHub OIDC for Azure](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-azure)
-
-1. In the lab tenant, create a single-tenant **App registration**. Entra creates its service principal, which appears under **Enterprise applications**. Copy the **Application (client) ID** and **Directory (tenant) ID** from the registration's Overview page. [Microsoft Entra app registration](https://learn.microsoft.com/en-us/entra/identity-platform/howto-create-service-principal-portal)
-2. On the app registration, go to **Certificates & secrets → Federated credentials → Add credential**. Select **GitHub Actions deploying Azure resources**. Set the organization to the GitHub repository owner's username or organization name and enter the repository name. Use the GitHub owner and repository IDs when prompted. Select **Environment** and enter `image-build-Azure-Packman-lab`.
-3. In the Azure portal, open the dedicated build resource group and go to **Access control (IAM) → Add role assignment**. Assign **Contributor** to the app's service principal at that resource group. [Azure role assignments](https://learn.microsoft.com/en-us/entra/identity-platform/howto-create-service-principal-portal#assign-a-role-to-the-application)
-
-For a public repository, the GitHub API returns the numeric IDs used by the form. `owner.id` is the **Organization ID** field, including for a personal repository. `id` is the **Repository ID**. Check the generated **Subject identifier** against the repository's OIDC subject format. New GitHub.com repositories use the owner and repository IDs in the subject. [GitHub OIDC subject formats](https://docs.github.com/en/actions/reference/security/oidc#immutable-subject-claims)
-
-~~~powershell
-$repo = Invoke-RestMethod 'https://api.github.com/repos/<owner>/<repository>'
-$repo.owner.id
-$repo.id
-"repo:$($repo.owner.login)@$($repo.owner.id)/$($repo.name)@$($repo.id):environment:image-build-Azure-Packman-lab"
-~~~
-
-The **image-build-Azure-Packman-lab** environment has these secrets and variables.
+The build job runs in the GitHub environment **image-build-Azure-Packman-lab** and signs in to Azure with OIDC.
 
 | Kind | Name | Value |
 | --- | --- | --- |
-| Secret | AZURE_CLIENT_ID | Application (client) ID from the app registration |
-| Secret | AZURE_TENANT_ID | Directory (tenant) ID from the app registration |
-| Secret | AZURE_SUBSCRIPTION_ID | Subscription ID for the Azure lab subscription |
-| Variable | AZURE_BUILD_RG | The existing lab resource group, such as `rg-packer-lab` |
+| Secret | AZURE_CLIENT_ID | Application (client) ID of the app registration |
+| Secret | AZURE_TENANT_ID | Directory (tenant) ID |
+| Secret | AZURE_SUBSCRIPTION_ID | Lab subscription ID |
+| Variable | AZURE_BUILD_RG | Resource group for the temporary build VM |
+| Variable | AZURE_GALLERY_RG | Resource group of the Compute Gallery |
+| Variable | AZURE_GALLERY_NAME | Compute Gallery name |
+| Variable | AZURE_IMAGE_DEFINITION | Image definition name |
+| Variable | BASELINE_STORAGE_ACCOUNT | Storage account holding `Harden-V2.ps1` |
+| Variable | BASELINE_CONTAINER | Its container |
+| Variable | BASELINE_BLOB | Its blob name |
+| Variable | BASELINE_SHA256 | SHA-256 of the reviewed script |
 
-Store the reviewed `Harden-V2.ps1` in a private Azure Blob container reachable from the GitHub runner. Grant the workflow identity **Storage Blob Data Reader** on that container. From the repository folder, an operator with blob write permission can upload the script under a name derived from its hash. Set `BASELINE_STORAGE_ACCOUNT`, `BASELINE_CONTAINER`, `BASELINE_BLOB`, and `BASELINE_SHA256` in **image-build-Azure-Packman-lab** to the corresponding values. When you approve a revised baseline, upload it under its new name and update the blob name and hash together. [Authorize Azure CLI access to Blob Storage](https://learn.microsoft.com/en-us/azure/storage/blobs/authorize-data-operations-cli)
+The app's service principal needs these roles.
 
-~~~powershell
-$account = '<storage-account>'
-$container = '<private-container>'
-$hash = (Get-FileHash .\Harden-V2.ps1 -Algorithm SHA256).Hash.ToLowerInvariant()
-$blob = "Harden-V2-$hash.ps1"
-az storage blob upload --auth-mode login --account-name $account --container-name $container --name $blob --file .\Harden-V2.ps1 --overwrite false -o none
-~~~
+| Role | Scope |
+| --- | --- |
+| Contributor | The build resource group |
+| Storage Blob Data Reader | The baseline container |
+| Reader | The gallery |
+| Contributor | The image definition |
 
-Go to **Actions → Windows Server image lab → Run workflow**, choose the default branch, and select **lab** for the first run. The hosted runner resolves its public IPv4 for the temporary WinRM allowlist. The lab uses a temporary self-signed WinRM certificate, with server certificate verification disabled in Packer. The public workflow summary reports check results without publishing the raw Packer log. Use the Azure Activity Log to see detailed deployment errors. [Azure Packer builder](https://developer.hashicorp.com/packer/integrations/hashicorp/azure/latest/components/builder/arm)
+The federated credential on the app registration must match the environment name. [GitHub OIDC for Azure](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-azure)
 
-## Capture a gallery candidate
-
-Create a **Windows, generalized, x64, Gen2** image definition in an Azure Compute Gallery. The example keeps the gallery in the build region and uses a separate resource group. Give the workflow identity read access at gallery scope and write access at image-definition scope.
+Create the gallery and a **Windows, generalized, x64, Gen2** image definition once.
 
 ~~~powershell
 $region = az group show -n 'rg-packer-lab' --query location -o tsv
-$principalId = az ad sp show --id '<application-client-id>' --query id -o tsv
-$galleryRg = 'rg-packer-images'
-$gallery = 'packerLabImages'
-$definition = 'windows-server-2025-lab'
-
-az group create -n $galleryRg -l $region -o none
-az sig create -g $galleryRg --gallery-name $gallery -l $region -o none
-$galleryId = az sig show -g $galleryRg --gallery-name $gallery --query id -o tsv
-$definitionId = az sig image-definition create -g $galleryRg --gallery-name $gallery --gallery-image-definition $definition --publisher PortfolioLab --offer WindowsServer2025 --sku Workgroup --os-type Windows --os-state Generalized --hyper-v-generation V2 --features SecurityType=TrustedLaunchSupported --query id -o tsv
-
-az role assignment create --assignee-object-id $principalId --assignee-principal-type ServicePrincipal --role Reader --scope $galleryId -o none
-az role assignment create --assignee-object-id $principalId --assignee-principal-type ServicePrincipal --role Contributor --scope $definitionId -o none
+az group create -n 'rg-packer-images' -l $region -o none
+az sig create -g 'rg-packer-images' --gallery-name 'packerLabImages' -l $region -o none
+az sig image-definition create -g 'rg-packer-images' --gallery-name 'packerLabImages' --gallery-image-definition 'windows-server-2025-lab' --publisher PortfolioLab --offer WindowsServer2025 --sku Workgroup --os-type Windows --os-state Generalized --hyper-v-generation V2 --features SecurityType=TrustedLaunchSupported -o none
 ~~~
 
-Add these variables to **image-build-Azure-Packman-lab**.
+## Run it
 
-| Variable | Value |
-| --- | --- |
-| AZURE_GALLERY_RG | `$galleryRg` |
-| AZURE_GALLERY_NAME | `$gallery` |
-| AZURE_IMAGE_DEFINITION | `$definition` |
-| AZURE_BASE_VERSION | Exact approved Marketplace version available in the build region |
-| AZURE_VALIDATION_SUBNET_ID | Full resource ID of a lab subnet in the build region with outbound HTTPS for the Azure VM agent |
+Go to **Actions → Windows Server image → Run workflow**. Each run publishes version `1.0.<run number>`. The full Packer log is in the build step, so a failed run shows the exact error.
 
-The workflow identity needs permission to read and join the validation subnet. The existing Contributor assignment covers a subnet inside the build resource group. For a subnet in another resource group, grant the identity access there, scoped to the lab subnet or virtual network as appropriate. Azure Run Command needs a working guest agent and outbound HTTPS. [Azure VM Run Command networking](https://learn.microsoft.com/en-us/azure/virtual-machines/windows/run-command)
+To run it from your own machine, install Packer, Azure CLI, Ansible and `pywinrm`, put `Harden-V2.ps1` next to the template, then run the build. Ansible needs Linux, macOS or WSL.
 
-Run **candidate** with **promote** unchecked for the first end-to-end test. Packer captures `1.<run-number>.<run-attempt>` excluded from `latest`. The pipeline boots that exact version and runs the Ansible playbook, then deletes the test resources. A failed audit leaves the version excluded. A passing manual run promotes the version if **promote** was selected. This affects new deployments that resolve the gallery definition's `latest` version. [Azure gallery version management](https://learn.microsoft.com/en-us/azure/virtual-machines/update-image-resources)
+~~~bash
+az login
+packer init .
+packer build .
+~~~
 
-## Schedule image updates
+Old gallery versions are not deleted automatically. Each one costs storage, so remove the ones you no longer deploy.
 
-Set the **repository** Actions variable `ENABLE_SCHEDULED_IMAGE_BUILDS` to `true` to enable the daily run at 09:17 UTC on the default branch. A scheduled run builds a new version and makes it eligible for `latest` after the audit passes. GitHub environment approval rules, if configured, still apply. [GitHub Actions scheduled workflows](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule)
+## Next
 
-The **image-build-Azure-Packman-lab** environment can override `ROUTINE_PATCH_DELAY_DAYS` (default 7), `CRITICAL_PATCH_DELAY_DAYS` (default 3, allowed 1–3), and `EXPEDITED_KBS` (a JSON list such as `["KB1234567"]`). The Windows Update Agent catalog date is used to evaluate delay. The Windows Update exception sets the VM to notify before installation. Superseded updates and patches already included in the approved Marketplace base are subject to the update catalog and base image contents.
-
-When CIS publishes a benchmark revision, review the changes before updating the baseline script and its pinned hash. Future builds use the reviewed revision. The post-capture audit checks the image before release. Ongoing compliance checks on VMs already deployed have their own trigger and inventory.
-
-## Troubleshooting from the lab
-
-| Symptom | What resolved it |
-| --- | --- |
-| PowerShell could not find `packer` or `az` | Installed the matching Windows CLI and reopened PowerShell so it could pick up the new PATH. |
-| Azure returned `InvalidTemplateDeployment` | Looked up the tracking ID in the Azure Activity Log and read the inner `QuotaExceeded` error. |
-| East US DSv5 family quota was zero | Checked available VM-family quotas and switched to `Standard_D2s_v4` after preflight validation. |
-| Quotas showed an empty table | Registered `Microsoft.Compute` and `Microsoft.Quota` for the lab subscription. |
-| Only the WinRM test appeared in the initial lab log | The script had been saved with a `.txt` suffix. The current template loads the reviewed `Harden-V2.ps1` from the repository folder. |
-| The GitHub run was green, but Azure showed no VM | A `push` validates the code. Use **Run workflow** to start an Azure build. **Re-run jobs** repeats the original event. |
-| The federation form asked for an Organization ID | For a personal repository, use the GitHub account's numeric owner ID. The GitHub repository API returns it in `owner.id`. |
-| The local lab finished with no artifact | Lab mode stops after provisioning and cleanup. Candidate mode adds generalization and image capture. |
+1. Security scanning of the image before a version is published. The workflow file itself is already scanned by [zizmor](https://docs.zizmor.sh/audits/).
+2. Monitoring for VMs deployed from the image.

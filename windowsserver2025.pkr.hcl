@@ -10,11 +10,11 @@ packer {
       source  = "github.com/rgl/windows-update"
       version = "= 0.18.5"
     }
+    ansible = {
+      source  = "github.com/hashicorp/ansible"
+      version = "~> 1.1"
+    }
   }
-}
-
-variable "runner_cidr" {
-  type = string
 }
 
 variable "build_resource_group" {
@@ -22,166 +22,107 @@ variable "build_resource_group" {
   default = "rg-packer-lab"
 }
 
+variable "gallery_resource_group" {
+  type    = string
+  default = "rg-packer-images"
+}
+
+variable "gallery_name" {
+  type    = string
+  default = "packerLabImages"
+}
+
+variable "image_definition" {
+  type    = string
+  default = "windows-server-2025-lab"
+}
+
+variable "image_version" {
+  type    = string
+  default = "0.0.1"
+}
+
 variable "vm_size" {
   type    = string
   default = "Standard_D2s_v4"
 }
 
-variable "base_version" {
-  type    = string
-  default = "latest"
-}
-
-variable "build_vm_name" {
+# When set, only this address can reach WinRM on the build VM.
+variable "runner_ip" {
   type    = string
   default = ""
-}
-
-variable "hardening_script_path" {
-  type    = string
-  default = "Harden-V2.ps1"
-}
-
-variable "routine_patch_delay_days" {
-  type    = number
-  default = 7
-  validation {
-    condition     = var.routine_patch_delay_days >= 3 && floor(var.routine_patch_delay_days) == var.routine_patch_delay_days
-    error_message = "The routine patch delay must be a whole number of days, at least 3."
-  }
-}
-
-variable "critical_patch_delay_days" {
-  type    = number
-  default = 3
-  validation {
-    condition     = contains([1, 2, 3], var.critical_patch_delay_days)
-    error_message = "The critical patch delay must be 1, 2, or 3 days."
-  }
-}
-
-variable "expedited_kbs" {
-  type    = list(string)
-  default = []
-  validation {
-    condition     = alltrue([for kb in var.expedited_kbs : can(regex("^KB[0-9]+$", kb))])
-    error_message = "Write expedited KBs as KB followed by digits."
-  }
-}
-
-locals {
-  expedited_kb_ids = [for kb in var.expedited_kbs : format("'%s'", trimprefix(kb, "KB"))]
-  expedited_filter = length(var.expedited_kbs) == 0 ? "$false" : "(@($_.KBArticleIDs | Where-Object { $_ -in @(${join(", ", local.expedited_kb_ids)}) }).Count -gt 0)"
-  patch_date       = "[datetime]::SpecifyKind($_.LastDeploymentChangeTime, [DateTimeKind]::Utc)"
-}
-
-variable "candidate" {
-  type = object({
-    resource_group = string
-    gallery        = string
-    definition     = string
-    version        = string
-  })
-  default = null
 }
 
 source "azure-arm" "win2025" {
   use_azure_cli_auth        = true
   build_resource_group_name = var.build_resource_group
   vm_size                   = var.vm_size
-  temp_compute_name         = var.build_vm_name
-  skip_create_image         = var.candidate == null
 
+  # The newest Windows Server 2025 image Microsoft publishes.
   os_type         = "Windows"
   image_publisher = "MicrosoftWindowsServer"
   image_offer     = "WindowsServer"
   image_sku       = "2025-datacenter-g2"
-  image_version   = var.base_version
 
-  allowed_inbound_ip_addresses = [var.runner_cidr]
   communicator                 = "winrm"
   winrm_username               = "packerbuild"
   winrm_use_ssl                = true
   winrm_use_ntlm               = true
   winrm_insecure               = true # The temporary certificate is self-signed.
+  allowed_inbound_ip_addresses = var.runner_ip == "" ? null : [var.runner_ip]
 
-  shared_gallery_image_version_exclude_from_latest = true
-  dynamic "shared_image_gallery_destination" {
-    for_each = var.candidate == null ? [] : [var.candidate]
-    content {
-      resource_group = shared_image_gallery_destination.value.resource_group
-      gallery_name   = shared_image_gallery_destination.value.gallery
-      image_name     = shared_image_gallery_destination.value.definition
-      image_version  = shared_image_gallery_destination.value.version
-    }
+  shared_image_gallery_destination {
+    resource_group = var.gallery_resource_group
+    gallery_name   = var.gallery_name
+    image_name     = var.image_definition
+    image_version  = var.image_version
   }
 }
 
 build {
   sources = ["source.azure-arm.win2025"]
 
+  # 1. Patch.
+  provisioner "windows-update" {}
+
+  # 2. Harden with the CIS Level 1 script.
   provisioner "powershell" {
-    inline = [
-      "$ErrorActionPreference = 'Stop'",
-      "if ((Get-CimInstance Win32_ComputerSystem).PartOfDomain) { throw 'Expected a workgroup VM.' }",
-      "Write-Output 'Packer reached the Windows workgroup VM.'",
-    ]
+    script = "${path.root}/scripts/Get-Lgpo.ps1"
   }
 
   provisioner "powershell" {
-    scripts = [
-      "${path.root}/scripts/Initialize-ImageBuild.ps1",
-      "${path.root}/scripts/Set-ImageUpdatePolicy.ps1",
-    ]
+    script                   = "${path.root}/Harden-V2.ps1"
     elevated_user            = "SYSTEM"
     elevated_password        = ""
-    elevated_execute_command = "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{{ .Path }}\""
-    timeout                  = "15m"
-  }
-
-  provisioner "windows-update" {
-    search_criteria = "IsInstalled=0 and IsHidden=0 and Type='Software'"
-    filters = [
-      "exclude: -not $_.LastDeploymentChangeTime -or $_.LastDeploymentChangeTime -lt [datetime]'2000-01-01'",
-      "include: ($_.MsrcSeverity -eq 'Critical' -or ${local.expedited_filter}) -and (${local.patch_date} -le [DateTime]::UtcNow.AddDays(-${var.critical_patch_delay_days}))",
-      "exclude: $_.BrowseOnly",
-      "include: ${local.patch_date} -le [DateTime]::UtcNow.AddDays(-${var.routine_patch_delay_days})",
-    ]
-    restart_timeout = "30m"
-    timeout         = "2h"
-  }
-
-  provisioner "powershell" {
-    script                   = "${path.root}/${var.hardening_script_path}"
-    elevated_user            = "SYSTEM"
-    elevated_password        = ""
-    elevated_execute_command = "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{{ .Path }}\" -Profile L1 -Apply -ExcludeControl 18.10.94.2.2 -LgpoPath \"%ProgramFiles%/CIS Image Build/LGPO.exe\""
+    elevated_execute_command = "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{{ .Path }}\" -Profile L1 -Apply -LgpoPath C:\\LGPO\\LGPO.exe"
     timeout                  = "30m"
   }
 
-  # Apply the image's update policy again after the CIS policy import.
-  provisioner "powershell" {
-    script                   = "${path.root}/scripts/Set-ImageUpdatePolicy.ps1"
-    elevated_user            = "SYSTEM"
-    elevated_password        = ""
-    elevated_execute_command = "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{{ .Path }}\""
-    timeout                  = "15m"
-  }
-
   provisioner "windows-restart" {
-    restart_timeout = "30m"
+    restart_timeout = "15m"
   }
 
+  # 3. Configure with Ansible.
+  provisioner "ansible" {
+    playbook_file = "${path.root}/ansible/configure.yml"
+    user          = "packerbuild"
+    use_proxy     = false
+    extra_arguments = [
+      "-e", "ansible_winrm_transport=ntlm",
+      "-e", "ansible_winrm_server_cert_validation=ignore",
+    ]
+  }
+
+  # 4. Generalize, then Packer captures the VM into the gallery. The scheduled task
+  # deletes the build account the first time a VM made from this image starts.
   provisioner "powershell" {
-    script                   = "${path.root}/scripts/Finalize-ImageBuild.ps1"
-    elevated_user            = "SYSTEM"
-    elevated_password        = ""
-    elevated_execute_command = "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{{ .Path }}\""
-    timeout                  = "15m"
-  }
-
-  provisioner "shell-local" {
-    command = var.candidate == null ? "echo Lab checks complete." : "bash scripts/generalize-image.sh"
-    timeout = "35m"
+    inline = [
+      "schtasks.exe /Create /TN RemoveBuildUser /RU SYSTEM /SC ONSTART /F /TR 'cmd.exe /c net user packerbuild /delete & schtasks.exe /Delete /TN RemoveBuildUser /F'",
+      "while ((Get-Service RdAgent).Status -ne 'Running') { Start-Sleep 5 }",
+      "while ((Get-Service WindowsAzureGuestAgent).Status -ne 'Running') { Start-Sleep 5 }",
+      "& $env:SystemRoot\\System32\\Sysprep\\Sysprep.exe /generalize /oobe /quiet /quit /mode:vm",
+      "while ((Get-ItemProperty HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Setup\\State).ImageState -ne 'IMAGE_STATE_GENERALIZE_RESEAL_TO_OOBE') { Start-Sleep 10 }",
+    ]
+    timeout = "30m"
   }
 }

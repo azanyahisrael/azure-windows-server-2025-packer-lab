@@ -1,0 +1,23 @@
+---
+# Runs against the build VM after the CIS script and a reboot. It corrects the image
+# to the settings below, so put anything the image must always have in this file.
+- name: Configure the hardened image
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Install Windows updates automatically, every day at 03:00
+      ansible.windows.win_regedit:
+        path: HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU
+        name: "{{ item.name }}"
+        data: "{{ item.data }}"
+        type: dword
+      loop:
+        - {name: NoAutoUpdate, data: 0}
+        - {name: AUOptions, data: 4}
+        - {name: ScheduledInstallDay, data: 0}
+        - {name: ScheduledInstallTime, data: 3}
+
+    - name: Remove LGPO from the image
+      ansible.windows.win_file:
+        path: C:\LGPO
+        state: absent
