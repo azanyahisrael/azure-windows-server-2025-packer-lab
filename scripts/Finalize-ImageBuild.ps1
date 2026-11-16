@@ -2,10 +2,14 @@
 $ErrorActionPreference = 'Stop'
 
 $updateKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
-if ((Get-ItemPropertyValue -LiteralPath $updateKey -Name AUOptions) -ne 3 -or
-    (Get-ItemPropertyValue -LiteralPath $updateKey -Name NoAutoUpdate) -ne 0) {
-    throw 'Expected Windows Update to notify before installing.'
+if (-not (Test-Path -LiteralPath $updateKey)) {
+    throw 'Windows Update policy key missing after reboot.'
 }
+$updatePolicy = Get-ItemProperty -LiteralPath $updateKey
+if ($updatePolicy.AUOptions -ne 3 -or $updatePolicy.NoAutoUpdate -ne 0) {
+    throw 'Windows Update policy did not match after reboot.'
+}
+Write-Output 'Windows Update notify-for-install policy verified after reboot.'
 
 $logonKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
 if ((Get-ItemPropertyValue -LiteralPath $logonKey -Name InactivityTimeoutSecs) -ne 900) {

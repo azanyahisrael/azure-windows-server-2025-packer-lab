@@ -6,7 +6,6 @@ $tools = Join-Path $env:ProgramFiles 'CIS Image Build'
 New-Item -ItemType Directory -Path $tools -Force | Out-Null
 $zip = Join-Path $tools 'LGPO.zip'
 $lgpo = Join-Path $tools 'LGPO.exe'
-$policy = Join-Path $tools 'WindowsUpdate.txt'
 $url = 'https://download.microsoft.com/download/8/5/c/85c25433-a1b0-4ffa-9429-7e023e7da8d8/LGPO.zip'
 $sha256 = 'CB7159D134A0A1E7B1ED2ADA9A3CE8CE8F4DE391D14403D55438AF824247CC55'
 
@@ -31,21 +30,7 @@ try {
         throw 'LGPO.exe does not have a valid Microsoft signature.'
     }
 
-    # Keep Automatic Updates enabled in notify-for-install mode while Packer chooses the patches.
-    $key = 'SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
-    @('Computer', $key, 'NoAutoUpdate', 'DWORD:0', '',
-      'Computer', $key, 'AUOptions', 'DWORD:3', '') | Set-Content -LiteralPath $policy -Encoding Unicode
-    & $lgpo /t $policy
-    if ($LASTEXITCODE -ne 0) { throw "LGPO returned exit code $LASTEXITCODE while setting update policy." }
-    & gpupdate.exe /target:computer /force /wait:180
-    if ($LASTEXITCODE -ne 0) { throw "gpupdate returned exit code $LASTEXITCODE." }
-    $actual = Get-ItemProperty -LiteralPath "HKLM:\$key"
-    if ($actual.NoAutoUpdate -ne 0 -or $actual.AUOptions -ne 3) {
-        throw 'Notify-for-install Windows Update policy did not take effect.'
-    }
-    Write-Output 'Verified Microsoft LGPO and set Windows Update to notify before installing.'
+    Write-Output 'Verified Microsoft LGPO.'
 } finally {
-    foreach ($path in $zip,$policy) {
-        if (Test-Path -LiteralPath $path -PathType Leaf) { Remove-Item -LiteralPath $path -Force }
-    }
+    if (Test-Path -LiteralPath $zip -PathType Leaf) { Remove-Item -LiteralPath $zip -Force }
 }

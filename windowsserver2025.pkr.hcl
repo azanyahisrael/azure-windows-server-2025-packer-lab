@@ -129,7 +129,10 @@ build {
   }
 
   provisioner "powershell" {
-    script                   = "${path.root}/scripts/Initialize-ImageBuild.ps1"
+    scripts = [
+      "${path.root}/scripts/Initialize-ImageBuild.ps1",
+      "${path.root}/scripts/Set-ImageUpdatePolicy.ps1",
+    ]
     elevated_user            = "SYSTEM"
     elevated_password        = ""
     elevated_execute_command = "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{{ .Path }}\""
@@ -154,6 +157,15 @@ build {
     elevated_password        = ""
     elevated_execute_command = "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{{ .Path }}\" -Profile L1 -Apply -ExcludeControl 18.10.94.2.2 -LgpoPath \"%ProgramFiles%/CIS Image Build/LGPO.exe\""
     timeout                  = "30m"
+  }
+
+  # Apply the image's update policy again after the CIS policy import.
+  provisioner "powershell" {
+    script                   = "${path.root}/scripts/Set-ImageUpdatePolicy.ps1"
+    elevated_user            = "SYSTEM"
+    elevated_password        = ""
+    elevated_execute_command = "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{{ .Path }}\""
+    timeout                  = "15m"
   }
 
   provisioner "windows-restart" {

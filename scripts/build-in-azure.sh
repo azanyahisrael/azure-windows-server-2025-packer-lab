@@ -65,11 +65,37 @@ packer validate .
 # Public workflow logs carry outcomes rather than raw Azure resource IDs and VM addresses.
 build_log=$(mktemp)
 trap 'rm -f "$build_log"' EXIT
-if ! packer build -color=false . >"$build_log" 2>&1; then
+if ! packer build -color=false . 2>&1 | tee "$build_log" | TZ=UTC awk '
+  function report(message) {
+    print strftime("[%H:%M:%SZ]"), message
+    fflush()
+  }
+  /: Packer reached the Windows workgroup VM\.[[:space:]]*$/ {
+    report("WinRM connected to the build VM.")
+  }
+  /: Windows Update notify-for-install policy applied\.[[:space:]]*$/ {
+    report("Windows Update notification policy applied.")
+  }
+  /: Running Windows update\.\.\.[[:space:]]*$/ {
+    report("Packer is running Windows Update.")
+  }
+  /: Restarting the machine\.\.\.[[:space:]]*$/ {
+    report("Windows Update requested a restart.")
+  }
+  /: Restarting Machine[[:space:]]*$/ {
+    report("Packer requested the post-hardening restart.")
+  }
+  /: (Restart complete|Machine successfully restarted, moving on)[[:space:]]*$/ {
+    report("Packer reconnected after a restart.")
+  }
+  /: Windows Update notify-for-install policy verified after reboot\.[[:space:]]*$/ {
+    report("Windows Update notification policy verified after reboot.")
+  }
+'; then
   echo 'Packer build failed. Check the Azure Activity Log for deployment errors.'
-  grep -Eo 'QuotaExceeded|SkuNotAvailable|AuthorizationFailed|RequestDisallowedByPolicy|context deadline exceeded|WinRM connection timeout' \
+  grep -Eo 'QuotaExceeded|SkuNotAvailable|AuthorizationFailed|RequestDisallowedByPolicy|context deadline exceeded|WinRM connection timeout|[Tt]imeout waiting for machine to restart' \
     "$build_log" | sort -u || true
-  grep -Eo '[0-9]+ controls require readback checks|Windows Update to notify before installing|LGPO.zip did not match the pinned SHA-256|CIS 2\.3\.7\.3|CIS 18\.10\.90\.2\.1' \
+  grep -Eo '[0-9]+ controls require readback checks|LGPO could not apply the Windows Update policy|Group Policy refresh failed while applying the Windows Update policy|Windows Update policy did not match immediately after Group Policy refresh|Windows Update policy key missing after reboot|Windows Update policy did not match after reboot|LGPO.zip did not match the pinned SHA-256|CIS 2\.3\.7\.3|CIS 18\.10\.90\.2\.1' \
     "$build_log" | sort -u || true
   exit 1
 fi
