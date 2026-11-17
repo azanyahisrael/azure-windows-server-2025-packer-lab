@@ -9,8 +9,8 @@ packer {
     # AWS PACKER MODULE
     amazon = {
       source  = "github.com/hashicorp/amazon"
-      version = "1.8.4"
-      # END OF AWS PACKER MODULE
+      version = "=1.8.4"
+    
     }
     windows-update = {
       source  = "github.com/rgl/windows-update"
@@ -64,7 +64,7 @@ variable "runner_ip" {
   type    = string
   default = ""
 }
-# END OF AWS REGION
+
 variable "aws_region" {
   type    = string
   default = "us-east-1"
@@ -111,7 +111,7 @@ source "amazon-ebs" "win2025" {
     most_recent = true
   }
 
-    ami_name = "windows-server-2025-cis-${var.image_version}"
+ami_name = "windows-server-2025-cis-${var.image_version}"
 
   communicator   = "winrm"
   winrm_username = "Administrator"
@@ -125,7 +125,7 @@ source "amazon-ebs" "win2025" {
 }
 
 build {
-  sources = ["source.azure-arm.win2025", "source.amazon-ebs.win2025"]
+  sources = ["source.azure-arm.win2025"]
 
   # If any step fails, print the hardening results before Packer deletes the VM.
   error-cleanup-provisioner "powershell" {
@@ -171,7 +171,7 @@ build {
   # 3. Configure with Ansible.
   provisioner "ansible" {
     playbook_file = "${path.root}/ansible/configure.yml"
-    user          = "packerbuild"
+    user          = build.User
     use_proxy     = false
     extra_arguments = [
       "-e", "ansible_winrm_transport=ntlm",
@@ -183,6 +183,7 @@ build {
   # 4. Generalize, then Packer captures the VM into the gallery. The scheduled task
   # deletes the build account the first time a VM made from this image starts.
   provisioner "powershell" {
+    only = ["azure-arm.win2025"]
     inline = [
       "schtasks.exe /Create /TN RemoveBuildUser /RU SYSTEM /SC ONSTART /F /TR 'cmd.exe /c net user packerbuild /delete & reg delete HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System /v LocalAccountTokenFilterPolicy /f & schtasks.exe /Delete /TN RemoveBuildUser /F'",
       "while ((Get-Service RdAgent).Status -ne 'Running') { Start-Sleep 5 }",
