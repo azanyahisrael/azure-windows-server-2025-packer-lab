@@ -45,6 +45,7 @@ On cost: this does not beat Microsoft's standard Marketplace image, which has no
 | [windowsserver2025.pkr.hcl](windowsserver2025.pkr.hcl) | The whole build, top to bottom. |
 | [ansible/configure.yml](ansible/configure.yml) | Settings enforced after hardening. Today it keeps automatic Windows updates on. |
 | [scripts/Get-Lgpo.ps1](scripts/Get-Lgpo.ps1) | Downloads Microsoft's LGPO.exe for the hardening script. |
+| [scripts/Show-HardeningLog.ps1](scripts/Show-HardeningLog.ps1) | Prints each CIS control's result in the build log, and again if any step fails. |
 | [.github/workflows/windows-image.yml](.github/workflows/windows-image.yml) | Validates every push and scans the workflow with zizmor. Builds on Mondays and on **Run workflow**. |
 
 The CIS script, `Harden-V2.ps1`, is private. The workflow downloads it from Azure Blob Storage and checks its SHA-256 before Packer runs.
@@ -93,7 +94,7 @@ az sig image-definition create -g 'rg-packer-lab' --gallery-name 'packerLabImage
 
 ## Run it
 
-Go to **Actions → Windows Server image → Run workflow**. Each run publishes version `1.0.<run number>`. The full Packer log is in the build step, so a failed run shows the exact error.
+Go to **Actions → Windows Server image → Run workflow**. Untick **Apply CIS hardening** for a test build that checks everything except hardening. A test version is kept out of `latest`, so nothing deploys it by accident. Each run publishes version `1.0.<run number>`. The full Packer log is in the build step, so a failed run shows the exact error.
 
 To run it from your own machine, install Packer, Azure CLI, Ansible and `pywinrm`, put `Harden-V2.ps1` next to the template, then run the build. Ansible needs Linux, macOS or WSL.
 

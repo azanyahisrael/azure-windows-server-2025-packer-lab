@@ -47,6 +47,12 @@ variable "vm_size" {
   default = "Standard_D2s_v4"
 }
 
+# Set to false for a test build without CIS hardening. That version is kept out of latest.
+variable "harden" {
+  type    = bool
+  default = true
+}
+
 # When set, only this address can reach WinRM on the build VM.
 variable "runner_ip" {
   type    = string
@@ -71,6 +77,7 @@ source "azure-arm" "win2025" {
   winrm_insecure               = true # The temporary certificate is self-signed.
   allowed_inbound_ip_addresses = var.runner_ip == "" ? null : [var.runner_ip]
 
+  shared_gallery_image_version_exclude_from_latest = !var.harden
   shared_image_gallery_destination {
     resource_group = var.gallery_resource_group
     gallery_name   = var.gallery_name
@@ -82,10 +89,18 @@ source "azure-arm" "win2025" {
 build {
   sources = ["source.azure-arm.win2025"]
 
+  # If any step fails, print the hardening results before Packer deletes the VM.
+  error-cleanup-provisioner "powershell" {
+    script            = "${path.root}/scripts/Show-HardeningLog.ps1"
+    elevated_user     = "SYSTEM"
+    elevated_password = ""
+  }
+
   # 1. Patch.
   provisioner "windows-update" {}
 
-  # 2. Harden with the CIS Level 1 script.
+  # 2. Harden with the CIS Level 1 script. Without -Apply it only previews, which is
+  # what a test build does.
   provisioner "powershell" {
     script = "${path.root}/scripts/Get-Lgpo.ps1"
   }
@@ -94,8 +109,15 @@ build {
     script                   = "${path.root}/Harden-V2.ps1"
     elevated_user            = "SYSTEM"
     elevated_password        = ""
-    elevated_execute_command = "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{{ .Path }}\" -Profile L1 -Apply -LgpoPath C:\\LGPO\\LGPO.exe"
+    elevated_execute_command = "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{{ .Path }}\" -Profile L1 ${var.harden ? "-Apply " : ""}-LgpoPath C:\\LGPO\\LGPO.exe"
     timeout                  = "30m"
+  }
+
+  # Print each control's result and the settings that affect the reconnect after reboot.
+  provisioner "powershell" {
+    script            = "${path.root}/scripts/Show-HardeningLog.ps1"
+    elevated_user     = "SYSTEM"
+    elevated_password = ""
   }
 
   provisioner "windows-restart" {
