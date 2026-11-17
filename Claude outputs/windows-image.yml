@@ -1,0 +1,98 @@
+name: Windows Server image
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 9 * * 1' # Every Monday, so the gallery's latest version is never more than a week old.
+  workflow_dispatch:
+    inputs:
+      harden:
+        description: Apply CIS hardening. Untick for a test build, which is kept out of latest.
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  PACKER_GITHUB_API_TOKEN: ${{ github.token }}
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-packer@ce93c3c08a6c2ff2275bf4b54ff0d9a75f6c9789 # v3
+        with:
+          version: '1.16.2'
+      - name: Scan the workflow for security problems
+        uses: zizmorcore/zizmor-action@45d7276c9ca790aabd705e31ca99c6185c3e76dd # v0.8.1
+        with:
+          version: '1.32.0'
+          advanced-security: false
+          annotations: true
+          online-audits: false
+      - name: Validate the Packer template
+        run: |
+          touch Harden-V2.ps1 # The real script is private. The build job downloads it.
+          packer fmt -check .
+          packer init .
+          packer validate .
+          PKR_VAR_harden=false packer validate .
+
+  build:
+    needs: validate
+    if: github.ref == 'refs/heads/main' && github.event_name != 'push'
+    runs-on: ubuntu-24.04
+    environment: image-build-Azure-Packman-lab
+    timeout-minutes: 180
+    concurrency: windows-server-image-build
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      PKR_VAR_build_resource_group: ${{ vars.AZURE_BUILD_RG }}
+      PKR_VAR_gallery_resource_group: ${{ vars.AZURE_GALLERY_RG }}
+      PKR_VAR_gallery_name: ${{ vars.AZURE_GALLERY_NAME }}
+      PKR_VAR_image_definition: ${{ vars.AZURE_IMAGE_DEFINITION }}
+      PKR_VAR_image_version: 1.0.${{ github.run_number }}
+      PKR_VAR_harden: ${{ github.event_name == 'schedule' || inputs.harden }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-packer@ce93c3c08a6c2ff2275bf4b54ff0d9a75f6c9789 # v3
+        with:
+          version: '1.16.2'
+      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Download the CIS hardening script
+        env:
+          ACCOUNT: ${{ vars.BASELINE_STORAGE_ACCOUNT }}
+          CONTAINER: ${{ vars.BASELINE_CONTAINER }}
+          BLOB: ${{ vars.BASELINE_BLOB }}
+          SHA256: ${{ vars.BASELINE_SHA256 }}
+        run: |
+          az storage blob download --auth-mode login --account-name "$ACCOUNT" \
+            --container-name "$CONTAINER" --name "$BLOB" --file Harden-V2.ps1 -o none
+          echo "${SHA256,,}  Harden-V2.ps1" | sha256sum --check
+      - name: Install Ansible with WinRM support
+        run: |
+          python3 -m venv "$RUNNER_TEMP/ansible"
+          "$RUNNER_TEMP/ansible/bin/pip" install ansible pywinrm
+          echo "$RUNNER_TEMP/ansible/bin" >> "$GITHUB_PATH"
+      - name: Build, harden and publish the image
+        run: |
+          runner_ip=$(curl -4 -fsS --retry 2 https://api.ipify.org)
+          echo "::add-mask::$runner_ip"
+          export PKR_VAR_runner_ip="$runner_ip"
+          packer init .
+          packer build -color=false .
+          echo "Published gallery version $PKR_VAR_image_version. Hardened: $PKR_VAR_harden." >> "$GITHUB_STEP_SUMMARY"
