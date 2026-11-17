@@ -104,7 +104,7 @@ build {
   provisioner "powershell" {
     script = "${path.root}/scripts/Get-Lgpo.ps1"
   }
-    # CIS 2.3.17.1 gives the built-in Administrator a non-admin token on remote sign-ins,
+  # CIS 2.3.17.1 gives the built-in Administrator a non-admin token on remote sign-ins,
   # and Packer signs in as that account. This keeps remote admin working for the build.
   # The first boot of every VM made from the image removes it again (see step 4).
   provisioner "powershell" {
@@ -145,7 +145,7 @@ build {
   # deletes the build account the first time a VM made from this image starts.
   provisioner "powershell" {
     inline = [
-            "schtasks.exe /Create /TN RemoveBuildUser /RU SYSTEM /SC ONSTART /F /TR 'cmd.exe /c net user packerbuild /delete & reg delete HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System /v LocalAccountTokenFilterPolicy /f & schtasks.exe /Delete /TN RemoveBuildUser /F'",
+      "schtasks.exe /Create /TN RemoveBuildUser /RU SYSTEM /SC ONSTART /F /TR 'cmd.exe /c net user packerbuild /delete & reg delete HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System /v LocalAccountTokenFilterPolicy /f & schtasks.exe /Delete /TN RemoveBuildUser /F'",
       "while ((Get-Service RdAgent).Status -ne 'Running') { Start-Sleep 5 }",
       "while ((Get-Service WindowsAzureGuestAgent).Status -ne 'Running') { Start-Sleep 5 }",
       "& $env:SystemRoot\\System32\\Sysprep\\Sysprep.exe /generalize /oobe /quiet /quit /mode:vm",
