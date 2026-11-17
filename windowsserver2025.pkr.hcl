@@ -10,7 +10,7 @@ packer {
     amazon = {
       source  = "github.com/hashicorp/amazon"
       version = "=1.8.4"
-    
+
     }
     windows-update = {
       source  = "github.com/rgl/windows-update"
@@ -111,7 +111,7 @@ source "amazon-ebs" "win2025" {
     most_recent = true
   }
 
-ami_name = "windows-server-2025-cis-${var.image_version}"
+  ami_name = "windows-server-2025-cis-${var.image_version}"
 
   communicator   = "winrm"
   winrm_username = "Administrator"
