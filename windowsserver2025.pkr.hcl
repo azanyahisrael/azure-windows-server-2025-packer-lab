@@ -6,6 +6,12 @@ packer {
       source  = "github.com/hashicorp/azure"
       version = "= 2.6.5"
     }
+    # AWS PACKER MODULE
+    amazon = {
+      source  = "github.com/hashicorp/amazon"
+      version = "1.8.4"
+      # END OF AWS PACKER MODULE
+    }
     windows-update = {
       source  = "github.com/rgl/windows-update"
       version = "= 0.18.5"
@@ -58,6 +64,11 @@ variable "runner_ip" {
   type    = string
   default = ""
 }
+# END OF AWS REGION
+variable "aws_region" {
+  type    = string
+  default = "us-east-1"
+}
 
 source "azure-arm" "win2025" {
   use_azure_cli_auth        = true
@@ -86,8 +97,35 @@ source "azure-arm" "win2025" {
   }
 }
 
+source "amazon-ebs" "win2025" {
+  region        = var.aws_region
+  instance_type = "t3.medium"
+
+  source_ami_filter {
+    filters = {
+      name                = "Windows_Server-2025-English-Full-Base-*"
+      virtualization-type = "hvm"
+      root-device-type    = "ebs"
+    }
+    owners      = ["amazon"]
+    most_recent = true
+  }
+
+    ami_name = "windows-server-2025-cis-${var.image_version}"
+
+  communicator   = "winrm"
+  winrm_username = "Administrator"
+  winrm_use_ssl  = true
+  winrm_insecure = true
+  winrm_use_ntlm = true
+  winrm_timeout  = "30m"
+  user_data_file = "${path.root}/scripts/aws-winrm-bootstrap.ps1"
+
+  temporary_security_group_source_public_ip = true
+}
+
 build {
-  sources = ["source.azure-arm.win2025"]
+  sources = ["source.azure-arm.win2025", "source.amazon-ebs.win2025"]
 
   # If any step fails, print the hardening results before Packer deletes the VM.
   error-cleanup-provisioner "powershell" {
