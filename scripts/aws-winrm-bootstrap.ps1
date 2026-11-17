@@ -8,7 +8,7 @@ Set-Service -Name WinRM -StartupType Automatic
 Start-Service -Name WinRM
 
 # Self-signed certificate for the listener. Packer accepts it because of winrm_insecure.
-$cert = New-SelfSignedCertificate -DnsName $env:COMPUTERNAME -CertStoreLocation Cert:\LocalMachine\My
+$cert = New-SelfSignedCertificate -DnsName $env:COMPUTERNAME -CertStoreLocation Cert:\LocalMachine\My -FriendlyName 'Packer WinRM'
 
 # HTTPS listener on port 5986, using that certificate.
 New-Item -Path WSMan:\localhost\Listener -Transport HTTPS -Address * -CertificateThumbPrint $cert.Thumbprint -Force | Out-Null

@@ -125,7 +125,7 @@ source "amazon-ebs" "win2025" {
 }
 
 build {
-  sources = ["source.azure-arm.win2025"]
+  sources = ["source.azure-arm.win2025", "source.amazon-ebs.win2025"]
 
   # If any step fails, print the hardening results before Packer deletes the VM.
   error-cleanup-provisioner "powershell" {
@@ -180,7 +180,7 @@ build {
     ]
   }
 
-  # 4. Generalize, then Packer captures the VM into the gallery. The scheduled task
+  # 4. Azure: generalize, then Packer captures the VM into the gallery. The scheduled task
   # deletes the build account the first time a VM made from this image starts.
   provisioner "powershell" {
     only = ["azure-arm.win2025"]
@@ -191,6 +191,14 @@ build {
       "& $env:SystemRoot\\System32\\Sysprep\\Sysprep.exe /generalize /oobe /quiet /quit /mode:vm",
       "while ((Get-ItemProperty HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Setup\\State).ImageState -ne 'IMAGE_STATE_GENERALIZE_RESEAL_TO_OOBE') { Start-Sleep 10 }",
     ]
+    timeout = "30m"
+  }
+
+  # 4. AWS: leave a first-boot cleanup task, then generalize. Packer stops the
+  # instance and creates the AMI.
+  provisioner "powershell" {
+    only    = ["amazon-ebs.win2025"]
+    script  = "${path.root}/scripts/Prepare-AwsImage.ps1"
     timeout = "30m"
   }
 }
