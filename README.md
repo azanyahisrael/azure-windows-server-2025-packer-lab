@@ -38,6 +38,11 @@ On cost: this does not beat Microsoft's standard Marketplace image, which has no
 | Packer got `403 AuthorizationFailed` reading the gallery. | The variables pointed at a second resource group that did not exist and that the service principal had no role on. | Put the gallery in the build resource group, where the service principal already has Contributor. |
 | The portal rejected the gallery name. | I typed a resource group style name with hyphens. Gallery names allow only letters, numbers, underscores and periods. | Named it `packerLabImages`. |
 | Packer got `404 ResourceNotFound` for the image definition. | The gallery existed but had no image definition inside it. | Created `windows-server-2025-lab` as Windows, Generalized, Gen 2, Trusted launch supported. |
+| Updated files went back to old versions, and `-1` copies of files ended up in a commit. | An open editor saved its stale copies over the new files, and the Claude app saved file attachments into the repo folder. | Moved the new files into place and deleted the copies. I close files in the editor before replacing them. |
+| `git push` was rejected. | A change had been made directly on GitHub (the 30-minute reboot wait), so GitHub had a commit my computer did not. | Ran `git pull --rebase`, then pushed. |
+| Packer got `401` right after the CIS script. | CIS 2.3.17.1 gives the built-in Administrator a non-admin token on remote sign-ins, and Packer signs in as that account. | Added a build-only exception (`LocalAccountTokenFilterPolicy=1`). A scheduled task removes it on the image's first boot, so deployed VMs keep the CIS setting. |
+| Ansible failed with "EncodedCommand is not properly encoded". | A newer Ansible expects the WinRM shell type `cmd`, but Packer's Ansible plugin sent `powershell`. | Added `-e ansible_shell_type=cmd`, and pinned `ansible`, `ansible-core` and `pywinrm` to exact versions so a new release cannot break the build again. |
+| The `validate` job failed with exit code 3, three times. | Hand edits left indentation one space off, and `packer fmt -check` rejects that. | Fixed the spacing. Running `packer fmt .` before committing prevents it. |
 
 ## What is in the repo
 
