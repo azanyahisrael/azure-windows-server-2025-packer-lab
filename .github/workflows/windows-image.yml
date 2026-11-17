@@ -68,6 +68,7 @@ jobs:
       PKR_VAR_gallery_name: ${{ vars.AZURE_GALLERY_NAME }}
       PKR_VAR_image_definition: ${{ vars.AZURE_IMAGE_DEFINITION }}
       PKR_VAR_image_version: 1.0.${{ github.run_number }}
+      PKR_VAR_aws_region: ${{ vars.AWS_REGION }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -80,6 +81,11 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Sign in to AWS using OIDC
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
       - name: Download the CIS hardening script
         env:
           ACCOUNT: ${{ vars.BASELINE_STORAGE_ACCOUNT }}
@@ -90,10 +96,11 @@ jobs:
           az storage blob download --auth-mode login --account-name "$ACCOUNT" \
             --container-name "$CONTAINER" --name "$BLOB" --file Harden-V2.ps1 -o none
           echo "${SHA256,,}  Harden-V2.ps1" | sha256sum --check
+      # Exact versions, so a new Ansible release can't change the build without a commit.
       - name: Install Ansible with WinRM support
         run: |
           python3 -m venv "$RUNNER_TEMP/ansible"
-          "$RUNNER_TEMP/ansible/bin/pip" install ansible pywinrm
+          "$RUNNER_TEMP/ansible/bin/pip" install 'ansible==14.6.0' 'ansible-core==2.21.6' 'pywinrm==0.5.0'
           echo "$RUNNER_TEMP/ansible/bin" >> "$GITHUB_PATH"
       - name: Build, harden and publish the image
         run: |
