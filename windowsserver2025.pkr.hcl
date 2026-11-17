@@ -99,7 +99,7 @@ build {
   }
 
   provisioner "windows-restart" {
-    restart_timeout = "15m"
+    restart_timeout = "30m"
   }
 
   # 3. Configure with Ansible.
