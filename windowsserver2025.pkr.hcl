@@ -131,11 +131,11 @@ build {
   }
 
   # 3. Configure with Ansible.
-  provisioner "ansible" {
+   provisioner "ansible" {
     playbook_file = "${path.root}/ansible/configure.yml"
     user          = "packerbuild"
     use_proxy     = false
-      extra_arguments = [
+    extra_arguments = [
       "-e", "ansible_winrm_transport=ntlm",
       "-e", "ansible_winrm_server_cert_validation=ignore",
       "-e", "ansible_shell_type=cmd",
