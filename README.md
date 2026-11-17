@@ -22,7 +22,8 @@ Every server I deploy starts from the same patched, CIS-hardened, versioned imag
 | Ansible | Enforces my own settings after hardening, such as automatic Windows updates. A playbook describes the end state, so it is safe to re-run and can later check deployed VMs. |
 | Azure Compute Gallery | Stores each build as a numbered version. Deployments ask for `latest`, and I can roll back if a build is bad. |
 | GitHub Actions | Rebuilds the image every week with nobody involved. It signs in to Azure with OIDC, so no Azure password is stored in GitHub. |
-| zizmor | Scans the pipeline itself, because a pipeline that can create Azure resources needs protecting too. |
+| zizmor | Scans the pipeline itself, because a pipeline that can create Azure resources needs protecting too. It specializes in GitHub Actions security. |
+| Checkov | Scans every file for leaked secrets, plus the workflow and Ansible playbook for misconfigurations. It also covers Terraform and Bicep if I add them later. |
 
 On cost: this does not beat Microsoft's standard Marketplace image, which has no image fee. It avoids the hourly software fee on pre-hardened Marketplace images, and it saves the time of patching and hardening each VM after it is deployed.
 
@@ -46,7 +47,7 @@ On cost: this does not beat Microsoft's standard Marketplace image, which has no
 | [ansible/configure.yml](ansible/configure.yml) | Settings enforced after hardening. Today it keeps automatic Windows updates on. |
 | [scripts/Get-Lgpo.ps1](scripts/Get-Lgpo.ps1) | Downloads Microsoft's LGPO.exe for the hardening script. |
 | [scripts/Show-HardeningLog.ps1](scripts/Show-HardeningLog.ps1) | Prints each CIS control's result in the build log, and again if any step fails. |
-| [.github/workflows/windows-image.yml](.github/workflows/windows-image.yml) | Validates every push and scans the workflow with zizmor. Builds on Mondays and on **Run workflow**. |
+| [.github/workflows/windows-image.yml](.github/workflows/windows-image.yml) | Validates every push, scans the workflow with zizmor and the code with Checkov. Builds on Mondays and on **Run workflow**. |
 
 The CIS script, `Harden-V2.ps1`, is private. The workflow downloads it from Azure Blob Storage and checks its SHA-256 before Packer runs.
 
@@ -108,5 +109,5 @@ Old gallery versions are not deleted automatically. Each one costs storage, so r
 
 ## Next
 
-1. Security scanning of the image before a version is published. The workflow file itself is already scanned by [zizmor](https://docs.zizmor.sh/audits/).
+1. Security scanning of the image before a version is published. The code is already scanned by [zizmor](https://docs.zizmor.sh/audits/) and [Checkov](https://www.checkov.io/).
 2. Monitoring for VMs deployed from the image.
