@@ -131,7 +131,7 @@ build {
   }
 
   # 3. Configure with Ansible.
-   provisioner "ansible" {
+  provisioner "ansible" {
     playbook_file = "${path.root}/ansible/configure.yml"
     user          = "packerbuild"
     use_proxy     = false
